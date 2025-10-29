@@ -5,7 +5,7 @@ export const Keys = {
     ipAddress: getEnvVar('OLLAMA_IP', '127.0.0.1'), // default ollama ip if none
     portAddress: getEnvVar('OLLAMA_PORT', '11434'), // default ollama port if none
     defaultModel: getEnvVar('MODEL', 'llama3.2'),
-    ollamaApiKey: getEnvVar('OLLAMA_API_KEY', '') // optional API key for Ollama auth
+    ollamaApiKey: process.env.OLLAMA_API_KEY || '' // optional API key, read directly to avoid required check
 } as const // readonly keys
 
 export default Keys
