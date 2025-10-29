@@ -1,7 +1,10 @@
-import { ApplicationCommandOptionType, Client, ChatInputCommandInteraction } from "discord.js"
-import { ollama } from "../client.js"
-import { ModelResponse } from "ollama"
-import { openConfig, UserCommand, SlashCommand } from "../utils/index.js"
+import { ApplicationCommandOptionType, Client, ChatInputCommandInteraction, MessageFlags } from 'discord.js';
+import { ollama } from '../client.js';
+import { openConfig, UserCommand, SlashCommand } from '../utils/index.js';
+import { validateModelName, validateUsername, ValidationError } from '../utils/validation.js';
+import { validateChannel, checkOllamaConnection, modelExists, safeReply } from '../utils/commandHelpers.js';
+import { logger } from '../utils/logger.js';
+import { ErrorCode, getUserFriendlyError } from '../utils/errorMessages.js';
 
 export const SwitchModel: SlashCommand = {
     name: 'switch-model',
@@ -19,55 +22,102 @@ export const SwitchModel: SlashCommand = {
 
     // Switch user preferred model if available in local library
     run: async (client: Client, interaction: ChatInputCommandInteraction) => {
-        await interaction.deferReply()
-
-        const modelInput: string = interaction.options.getString('model-to-use') as string
-
-        // fetch channel and message
-        const channel = await client.channels.fetch(interaction.channelId)
-        if (!channel || !UserCommand.includes(channel.type)) return
-
         try {
-            // Phase 1: Switch to the model
-            let switchSuccess = false
-            await ollama.list()
-                .then(response => {
-                    for (const model in response.models) {
-                        const currentModel: ModelResponse = response.models[model]
-                        if (currentModel.name.startsWith(modelInput)) {
-                            openConfig(`${interaction.user.username}-config.json`, interaction.commandName, modelInput)
-
-                            // successful switch
-                            interaction.editReply({
-                                content: `Successfully switched to **${modelInput}** as the preferred model for ${interaction.user.username}.`
-                            })
-                            switchSuccess = true
-                        }
-                    }
-                })
-                .catch(error => {
-                    console.error(`[Command: switch-model] Failed to connect with Ollama service. Error: ${error.message}`)
-                })
-            // todo: problem can be here if async messes up
-            if (switchSuccess) {
-                // set model now that it exists
-                openConfig(`${interaction.user.username}-config.json`, interaction.commandName, modelInput)
-                return
+            // STANDARDIZATION FIX: Follow same pattern as other commands
+            // Validate channel type with proper error reply
+            const channel = await validateChannel(client, interaction.channelId, UserCommand);
+            if (!channel) {
+                await interaction.reply({
+                    content: 'This command cannot be used in this type of channel.',
+                    flags: MessageFlags.Ephemeral
+                });
+                return;
             }
 
-            // Phase 2: Notify user of failure to find model.
-            interaction.editReply({
-                content: `Could not find **${modelInput}** in local model library.\n\nPlease contact an server admin for access to this model.`
-            })
-        } catch (error: any) {
-            // could not resolve user model switch
-            if (error.message.includes("fetch failed") as string)
-                error.message = "The Ollama service is not running. Please turn on/download the [service](https://ollama.com/)."
+            // Validate inputs BEFORE defer (in try-catch)
+            let modelInput: string;
+            let safeUsername: string;
+            try {
+                modelInput = validateModelName(
+                    interaction.options.getString('model-to-use')
+                );
+                safeUsername = validateUsername(interaction.user.username);
+            } catch (error) {
+                if (error instanceof ValidationError) {
+                    await interaction.reply({
+                        content: `**Validation Error:** ${error.message}`,
+                        flags: MessageFlags.Ephemeral
+                    });
+                }
+                return;
+            }
 
-            interaction.editReply({
-                content: `Unable to switch user preferred model to **${modelInput}**.\n\n${error.message}`
-            })
-            return
+            // NOW defer after validation passes
+            await interaction.deferReply();
+
+            // Check Ollama connection
+            const connectionStatus = await checkOllamaConnection(ollama);
+            if (!connectionStatus.connected) {
+                await interaction.editReply({
+                    content: getUserFriendlyError(connectionStatus.errorCode!)
+                });
+                return;
+            }
+
+            // Check if model exists in Ollama library
+            const exists = await modelExists(ollama, modelInput);
+
+            if (exists) {
+                // Update configuration with validated inputs
+                await openConfig(
+                    `${safeUsername}-config.json`,
+                    interaction.commandName,
+                    modelInput
+                );
+
+                logger.info('Command:SwitchModel', `Model switched successfully`, {
+                    userId: interaction.user.id,
+                    username: safeUsername,
+                    modelName: modelInput
+                });
+
+                await interaction.editReply({
+                    content: `✅ Successfully switched to **${modelInput}** as the preferred model for ${interaction.user.username}.`
+                });
+            } else {
+                // Model not found in library
+                await interaction.editReply({
+                    content: `❌ Could not find **${modelInput}** in local model library.\n\n` +
+                             `Please contact a server admin to pull this model using \`/pull-model ${modelInput}\`.`
+                });
+            }
+
+        } catch (error: unknown) {
+            logger.error('Command:SwitchModel', 'Error switching model', {
+                error: error instanceof Error ? error.message : 'Unknown',
+                userId: interaction.user.id
+            });
+
+            let errorMessage: string;
+            if (error instanceof ValidationError) {
+                errorMessage = `**Validation Error:** ${error.message}`;
+            } else if (error instanceof Error) {
+                // Check for specific error types
+                if (error.message.includes('fetch failed') || error.message.includes('ECONNREFUSED')) {
+                    errorMessage = getUserFriendlyError(ErrorCode.OLLAMA_OFFLINE);
+                } else {
+                    errorMessage = `**Error:** ${error.message}`;
+                }
+            } else {
+                errorMessage = 'An unknown error occurred while switching models.';
+            }
+
+            // Use safeReply to handle deferred/non-deferred states
+            await safeReply(
+                interaction,
+                `Unable to switch model.\n\n${errorMessage}`,
+                true
+            );
         }
     }
-}
+};

@@ -15,5 +15,7 @@ export default event(Events.InteractionCreate, async ({ log, client }, interacti
     if (!command) return
 
     // the command exists, execute it
-    command.run(client, interaction)
+    await command.run(client, interaction).catch((error: unknown) => {
+        log('[Command Error]', error);
+    });
 })

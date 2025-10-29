@@ -1,7 +1,11 @@
-import { ApplicationCommandOptionType, Client, ChatInputCommandInteraction, MessageFlags } from "discord.js"
-import { ollama } from "../client.js"
-import { ModelResponse } from "ollama"
-import { UserCommand, SlashCommand } from "../utils/index.js"
+import { ApplicationCommandOptionType, Client, ChatInputCommandInteraction, MessageFlags } from 'discord.js';
+import { ollama } from '../client.js';
+import { ModelResponse } from 'ollama';
+import { UserCommand, SlashCommand } from '../utils/index.js';
+import { validateModelName, ValidationError } from '../utils/validation.js';
+import { requireAdmin, validateChannel, checkOllamaConnection, modelExists, safeReply } from '../utils/commandHelpers.js';
+import { logger } from '../utils/logger.js';
+import { ErrorCode, getUserFriendlyError } from '../utils/errorMessages.js';
 
 export const PullModel: SlashCommand = {
     name: 'pull-model',
@@ -19,65 +23,111 @@ export const PullModel: SlashCommand = {
 
     // Pull for model from Ollama library
     run: async (client: Client, interaction: ChatInputCommandInteraction) => {
-        // defer reply to avoid timeout
-        await interaction.deferReply()
-        const modelInput: string = interaction.options.getString('model-to-pull') as string
-        let ollamaOffline: boolean = false
-
-        // fetch channel and message
-        const channel = await client.channels.fetch(interaction.channelId)
-        if (!channel || !UserCommand.includes(channel.type)) return
-
-        // Admin Command
-        if (!interaction.memberPermissions?.has('Administrator')) {
-            interaction.reply({
-                content: `${interaction.commandName} is an admin command.\n\nPlease contact a server admin to pull the model you want.`,
-                flags: MessageFlags.Ephemeral
-            })
-            return
-        }
-
-        // check if model was already pulled, if the ollama service isn't running throw error
-        const modelExists = await ollama.list()
-            .then(response => response.models.some((model: ModelResponse) => model.name.startsWith(modelInput)))
-            .catch(error => {
-                ollamaOffline = true
-                console.error(`[Command: pull-model] Failed to connect with Ollama service. Error: ${error.message}`)
-            })
-       
-        // Validate for any issue or if service is running
-        if (ollamaOffline) {
-            interaction.editReply({
-                content: `The Ollama service is not running. Please turn on/download the [service](https://ollama.com/).`
-            })
-            return
-        }
-
-
         try {
-            // call ollama to pull desired model
-            if (!modelExists) {
-                interaction.editReply({
-                    content: `**${modelInput}** could not be found. Please wait patiently as I try to retrieve it...`
-                })
-                await ollama.pull({ model: modelInput })
-            }
-        } catch (error) {
-            // could not resolve pull or model unfound
-            interaction.editReply({
-                content: `Could not retrieve the **${modelInput}** model. You can find models at [Ollama Model Library](https://ollama.com/library).\n\nPlease check the model library and try again.`
-            })
-            return
-        }
+            // CRITICAL FIX: Admin check FIRST
+            if (!await requireAdmin(interaction)) return;
 
-        // successful interaction
-        if (modelExists)
-            interaction.editReply({
-                content: `**${modelInput}** is already available.`
-            })
-        else
-            interaction.editReply({
-                content: `Successfully added **${modelInput}**.`
-            })
+            // Validate channel type with proper error reply
+            const channel = await validateChannel(client, interaction.channelId, UserCommand);
+            if (!channel) {
+                await interaction.reply({
+                    content: 'This command cannot be used in this type of channel.',
+                    flags: MessageFlags.Ephemeral
+                });
+                return;
+            }
+
+            // CRITICAL FIX: Validate inputs BEFORE defer (in try-catch)
+            let modelInput: string;
+            try {
+                modelInput = validateModelName(
+                    interaction.options.getString('model-to-pull')
+                );
+            } catch (error) {
+                if (error instanceof ValidationError) {
+                    await interaction.reply({
+                        content: `**Validation Error:** ${error.message}`,
+                        flags: MessageFlags.Ephemeral
+                    });
+                }
+                return;
+            }
+
+            // NOW defer after validation passes
+            await interaction.deferReply();
+
+            // Check Ollama connection
+            const connectionStatus = await checkOllamaConnection(ollama);
+            if (!connectionStatus.connected) {
+                await interaction.editReply({
+                    content: getUserFriendlyError(connectionStatus.errorCode!)
+                });
+                return;
+            }
+
+            // Check if model was already pulled
+            const exists = await modelExists(ollama, modelInput);
+
+            // Call ollama to pull desired model
+            if (!exists) {
+                await interaction.editReply({
+                    content: `**${modelInput}** could not be found locally. Please wait patiently as I try to retrieve it from the Ollama library...`
+                });
+
+                try {
+                    await ollama.pull({ model: modelInput });
+                    logger.info('Command:PullModel', `Model pulled successfully`, {
+                        userId: interaction.user.id,
+                        modelName: modelInput
+                    });
+                    await interaction.editReply({
+                        content: `✅ Successfully added **${modelInput}**.`
+                    });
+                } catch (pullError: unknown) {
+                    // Could not resolve pull or model unfound
+                    const errorMsg = pullError instanceof Error ? pullError.message : 'Unknown error';
+                    logger.error('Command:PullModel', 'Pull failed', {
+                        error: errorMsg,
+                        userId: interaction.user.id,
+                        modelName: modelInput
+                    });
+
+                    await interaction.editReply({
+                        content: `❌ Could not retrieve the **${modelInput}** model.\n\nYou can find models at [Ollama Model Library](https://ollama.com/library).\n\nPlease check the model library and try again.`
+                    });
+                }
+            } else {
+                // Model already exists
+                await interaction.editReply({
+                    content: `✅ **${modelInput}** is already available in the local library.`
+                });
+            }
+
+        } catch (error: unknown) {
+            logger.error('Command:PullModel', 'Error pulling model', {
+                error: error instanceof Error ? error.message : 'Unknown',
+                userId: interaction.user.id
+            });
+
+            let errorMessage: string;
+            if (error instanceof ValidationError) {
+                errorMessage = `**Validation Error:** ${error.message}`;
+            } else if (error instanceof Error) {
+                if (error.message.includes('fetch failed') || error.message.includes('ECONNREFUSED')) {
+                    errorMessage = getUserFriendlyError(ErrorCode.OLLAMA_OFFLINE);
+                } else {
+                    errorMessage = `**Error:** ${error.message}`;
+                }
+            } else {
+                errorMessage = 'An unknown error occurred while pulling the model.';
+            }
+
+            // Use safeReply to handle deferred/non-deferred states
+            await safeReply(
+                interaction,
+                `Unable to pull model.\n\n${errorMessage}`,
+                true
+            );
+        }
     }
-}
+};

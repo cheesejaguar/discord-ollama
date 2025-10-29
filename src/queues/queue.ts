@@ -1,70 +1,149 @@
-// Queue interfaces for any queue class to follow
+/**
+ * Queue interface defining basic queue operations
+ */
 interface IQueue<T> {
-    enqueue(item: T): void
-    dequeue(): T | undefined
-    size(): number
+    enqueue(item: T): void;
+    dequeue(): T | undefined;
+    size(): number;
 }
 
 /**
- * Queue for UserMessages
- *      When the limit for messages is met, we want to clear
- *      out the oldest message in the queue
+ * FIFO Queue for managing message history
+ *
+ * This queue automatically manages capacity by removing oldest items
+ * when the limit is reached.
+ *
+ * Queue order (FIFO - First In, First Out):
+ * [oldest] item1 -> item2 -> item3 -> item4 [newest]
+ *
+ * - enqueue(): adds to the END (newest position)
+ * - dequeue(): removes from the FRONT (oldest position)
+ * - removeLast(): removes from the END (newest position)
  */
 export class Queue<T> implements IQueue<T> {
-    private storage: T[] = []
+    private storage: T[] = [];
 
     /**
-     * Set up Queue
-     * @param capacity max length of queue
+     * Creates a new queue with specified capacity
+     * @param capacity - Maximum number of items in the queue
      */
-    constructor(public capacity: number = 5) { }
+    constructor(public capacity: number = 5) {
+        if (capacity < 1) {
+            throw new Error('Queue capacity must be at least 1');
+        }
+    }
 
     /**
-     * Put item in front of queue
-     * @param item object of type T to add into queue
+     * Adds an item to the end of the queue (newest position)
+     * Automatically removes oldest item if queue is at capacity
+     *
+     * @param item - Item to add to the queue
+     *
+     * @example
+     * queue.enqueue(message);  // Adds to end, removes oldest if full
      */
     enqueue(item: T): void {
-        if (this.size() === this.capacity)
-            throw Error('Queue has reached max capacity, you cannot add more items.')
-        this.storage.push(item)
+        // Auto-dequeue oldest if at capacity
+        while (this.size() >= this.capacity) {
+            this.dequeue();
+        }
+
+        this.storage.push(item);
     }
 
     /**
-     * Remove item at end of queue
-     * @returns object of type T in queue
+     * Removes and returns the oldest item from the queue (FIFO)
+     *
+     * @returns The oldest item, or undefined if queue is empty
+     *
+     * @example
+     * const oldest = queue.dequeue();  // Removes from front
      */
     dequeue(): T | undefined {
-        return this.storage.shift()
+        return this.storage.shift();
     }
 
     /**
-     * Size of the queue
-     * @returns length of queue as a int/number
+     * Removes the newest item from the queue
+     * Useful for error rollback - removing the item that was just added
+     *
+     * @returns The newest item, or undefined if queue is empty
+     *
+     * @example
+     * queue.enqueue(message);
+     * // ... operation fails ...
+     * queue.removeLast();  // Remove the message we just added
+     */
+    removeLast(): T | undefined {
+        return this.storage.pop();
+    }
+
+    /**
+     * Returns the current size of the queue
+     *
+     * @returns Number of items in the queue
      */
     size(): number {
-        return this.storage.length
+        return this.storage.length;
     }
 
     /**
-     * Remove the front of the queue, typically for errors
-     */
-    pop(): void {
-        this.storage.pop()
-    }
-
-    /**
-     * Get the queue as an array
-     * @returns a array of T items
+     * Returns a copy of all items in the queue
+     * Items are ordered from oldest to newest
+     *
+     * @returns Array of queue items [oldest, ..., newest]
      */
     getItems(): T[] {
-        return this.storage
+        return [...this.storage];  // Return copy to prevent external modification
     }
 
     /**
-     * Set a new queue to modify
-     * @param newQueue new queue of T[] to modify
+     * Replaces the entire queue contents
+     * Validates that new queue doesn't exceed capacity
+     *
+     * @param newQueue - New array of items to set as queue
+     * @throws {Error} If new queue exceeds capacity
      */
     setQueue(newQueue: T[]): void {
-        this.storage = newQueue
+        if (newQueue.length > this.capacity) {
+            throw new Error(
+                `Cannot set queue: ${newQueue.length} items exceeds capacity of ${this.capacity}`
+            );
+        }
+        this.storage = [...newQueue];  // Copy array to prevent external modification
+    }
+
+    /**
+     * Clears all items from the queue
+     */
+    clear(): void {
+        this.storage = [];
+    }
+
+    /**
+     * Checks if the queue is empty
+     *
+     * @returns true if queue has no items, false otherwise
+     */
+    isEmpty(): boolean {
+        return this.storage.length === 0;
+    }
+
+    /**
+     * Checks if the queue is at capacity
+     *
+     * @returns true if queue is full, false otherwise
+     */
+    isFull(): boolean {
+        return this.storage.length >= this.capacity;
+    }
+
+    /**
+     * @deprecated Use removeLast() instead for clarity
+     * This method is kept for backwards compatibility
+     */
+    pop(): void {
+        console.warn('[Queue] pop() is deprecated. Use removeLast() instead.');
+        this.storage.pop();
     }
 }

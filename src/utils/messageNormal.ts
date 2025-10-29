@@ -1,8 +1,28 @@
-import { Message, SendableChannels } from 'discord.js'
-import { ChatResponse, Ollama } from 'ollama'
-import { ChatParams, UserMessage, streamResponse, blockResponse } from './index.js'
-import { Queue } from '../queues/queue.js'
-import { AbortableAsyncIterator } from 'ollama/src/utils.js'
+import { Message, SendableChannels } from 'discord.js';
+import { ChatResponse, Ollama } from 'ollama';
+import { ChatParams, UserMessage, streamResponse, blockResponse } from './index.js';
+import { Queue } from '../queues/queue.js';
+import { AbortableAsyncIterator } from 'ollama/src/utils.js';
+import { ErrorCode, getUserFriendlyError } from './errorMessages.js';
+
+// Configurable timeout in milliseconds (default 60 seconds)
+const OLLAMA_TIMEOUT_MS = parseInt(process.env.OLLAMA_TIMEOUT_MS || '60000', 10);
+
+/**
+ * Wraps a promise with a timeout
+ * @param promise The promise to wrap
+ * @param timeoutMs Timeout in milliseconds
+ * @returns The promise result or throws timeout error
+ */
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+    const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => {
+            reject(new Error('TIMEOUT'));
+        }, timeoutMs);
+    });
+
+    return Promise.race([promise, timeoutPromise]);
+}
 
 /**
  * Method to send replies as normal text on discord like any other user
@@ -32,8 +52,12 @@ export async function normalMessage(
 
             // run query based on stream preference, true = stream, false = block
             if (stream) {
-                let messageBlock: Message = sentMessage
-                response = await streamResponse(params) // THIS WILL BE SLOW due to discord limits!
+                let messageBlock: Message = sentMessage;
+                // Wrap stream response with timeout
+                response = await withTimeout(
+                    streamResponse(params),
+                    OLLAMA_TIMEOUT_MS
+                ); // THIS WILL BE SLOW due to discord limits!
                 for await (const portion of response) {
                     // check if over discord message limit
                     if (result.length + portion.message.content.length > 2000) {
@@ -47,14 +71,18 @@ export async function normalMessage(
 
                         // ensure block is not empty
                         if (result.length > 5)
-                            messageBlock.edit(result)
+                            await messageBlock.edit(result);
                     }
                     console.log(result)
                 }
             }
             else {
-                response = await blockResponse(params)
-                result = response.message.content
+                // Wrap block response with timeout
+                response = await withTimeout(
+                    blockResponse(params),
+                    OLLAMA_TIMEOUT_MS
+                );
+                result = response.message.content;
 
                 // check if there is a <think>...</think> sequence from the bot.
                 if (hasThinking(result))
@@ -62,27 +90,48 @@ export async function normalMessage(
 
                 // check if message length > discord max for normal messages
                 if (result.length > 2000) {
-                    sentMessage.edit(result.slice(0, 2000))
-                    result = result.slice(2000)
+                    await sentMessage.edit(result.slice(0, 2000));
+                    result = result.slice(2000);
 
                     // handle for rest of message that is >2000
                     while (result.length > 2000) {
-                        channel.send(result.slice(0, 2000))
-                        result = result.slice(2000)
+                        await channel.send(result.slice(0, 2000));
+                        result = result.slice(2000);
                     }
 
                     // last part of message
-                    channel.send(result)
-                } else // edit the 'generic' response to new message since <2000
-                    sentMessage.edit(result)
+                    await channel.send(result);
+                } else { // edit the 'generic' response to new message since <2000
+                    await sentMessage.edit(result);
+                }
             }
-        } catch (error: any) {
-            console.log(`[Util: messageNormal] Error creating message: ${error.message}`)
-            if (error.message.includes('fetch failed'))
-                error.message = 'Missing ollama service on machine'
-            else if (error.message.includes('try pulling it first'))
-                error.message = `You do not have the ${model} downloaded. Ask an admin to pull it using the \`pull-model\` command.`
-            sentMessage.edit(`**Response generation failed.**\n\nReason: ${error.message}`)
+        } catch (error: unknown) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            console.log(`[Util: messageNormal] Error creating message: ${errorMessage}`);
+
+            let userMessage: string;
+            if (error instanceof Error) {
+                // Check for timeout error
+                if (error.message === 'TIMEOUT') {
+                    userMessage = getUserFriendlyError(
+                        ErrorCode.TIMEOUT,
+                        `Request exceeded ${OLLAMA_TIMEOUT_MS / 1000} seconds`
+                    );
+                } else if (error.message.includes('fetch failed') || error.message.includes('ECONNREFUSED')) {
+                    userMessage = getUserFriendlyError(ErrorCode.OLLAMA_OFFLINE);
+                } else if (error.message.includes('try pulling it first')) {
+                    userMessage = getUserFriendlyError(
+                        ErrorCode.NO_MODEL,
+                        `Model "${model}" not found. Ask an admin to run /pull-model`
+                    );
+                } else {
+                    userMessage = `**Error:** ${error.message}`;
+                }
+            } else {
+                userMessage = getUserFriendlyError(ErrorCode.UNKNOWN);
+            }
+
+            await sentMessage.edit(userMessage);
         }
     })
 

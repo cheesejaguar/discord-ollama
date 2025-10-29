@@ -1,5 +1,6 @@
-import { Client, ChatInputCommandInteraction, ApplicationCommandOptionType, MessageFlags } from 'discord.js'
-import { openConfig, SlashCommand, UserCommand } from '../utils/index.js'
+import { Client, ChatInputCommandInteraction, ApplicationCommandOptionType, MessageFlags } from 'discord.js';
+import { openConfig, SlashCommand, UserCommand } from '../utils/index.js';
+import { validateCapacity, validateUsername, ValidationError } from '../utils/validation.js';
 
 export const Capacity: SlashCommand = {
     name: 'modify-capacity',
@@ -17,18 +18,45 @@ export const Capacity: SlashCommand = {
 
     // Query for message information and set the style
     run: async (client: Client, interaction: ChatInputCommandInteraction) => {
-        // fetch channel and message
-        const channel = await client.channels.fetch(interaction.channelId)
-        if (!channel || !UserCommand.includes(channel.type)) return
+        try {
+            // Fetch channel and validate
+            const channel = await client.channels.fetch(interaction.channelId);
+            if (!channel || !UserCommand.includes(channel.type)) {
+                await interaction.reply({
+                    content: 'This command cannot be used in this type of channel.',
+                    flags: MessageFlags.Ephemeral
+                });
+                return;
+            }
 
-        // set state of bot chat features
-        openConfig(`${interaction.user.username}-config.json`, interaction.commandName,
-            interaction.options.getNumber('context-capacity')
-        )
+            // Validate capacity input
+            const capacityInput = interaction.options.getNumber('context-capacity');
+            const capacity = validateCapacity(capacityInput);
 
-        interaction.reply({
-            content: `Max message history is now set to \`${interaction.options.get('context-capacity')?.value}\``,
-            flags: MessageFlags.Ephemeral
-        })
+            // Validate username for safe file operations
+            const safeUsername = validateUsername(interaction.user.username);
+
+            // Update configuration
+            await openConfig(`${safeUsername}-config.json`, interaction.commandName, capacity);
+
+            await interaction.reply({
+                content: `✅ Max message history is now set to **${capacity}** messages.`,
+                flags: MessageFlags.Ephemeral
+            });
+
+        } catch (error) {
+            if (error instanceof ValidationError) {
+                await interaction.reply({
+                    content: `**Validation Error:** ${error.message}`,
+                    flags: MessageFlags.Ephemeral
+                });
+            } else {
+                console.error('[Command: modify-capacity] Error:', error);
+                await interaction.reply({
+                    content: `Failed to update capacity: ${(error as Error).message}`,
+                    flags: MessageFlags.Ephemeral
+                });
+            }
+        }
     }
-}
+};

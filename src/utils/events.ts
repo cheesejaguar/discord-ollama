@@ -1,9 +1,10 @@
-import type { ClientEvents, Awaitable, Client } from 'discord.js'
-import { Ollama } from 'ollama'
-import { Queue } from '../queues/queue.js'
+import type { ClientEvents, Awaitable, Client } from 'discord.js';
+import { Ollama } from 'ollama';
+import { Queue } from '../queues/queue.js';
+import { RateLimiter } from './rateLimiter.js';
 
 // Export events through here to reduce amount of imports
-export { Events } from 'discord.js'
+export { Events } from 'discord.js';
 
 export type LogMethod = (...args: unknown[]) => void
 export type EventKeys = keyof ClientEvents // only wants keys of ClientEvents object
@@ -39,7 +40,8 @@ export interface EventProps {
     msgHist: Queue<UserMessage>,
     channelHistory: Queue<UserMessage>,
     ollama: Ollama,
-    defaultModel: String
+    defaultModel: String,
+    rateLimiter: RateLimiter
 }
 
 /**
@@ -74,6 +76,7 @@ export function event<T extends EventKeys>(key: T, callback: EventCallback<T>): 
  * @param events all the exported events from the index.ts in the events dir
  * @param msgHist The message history of the bot
  * @param ollama the initialized ollama instance
+ * @param rateLimiter Rate limiter for spam protection
  */
 export function registerEvents(
     client: Client,
@@ -81,19 +84,20 @@ export function registerEvents(
     msgHist: Queue<UserMessage>,
     channelHistory: Queue<UserMessage>,
     ollama: Ollama,
-    defaultModel: String
+    defaultModel: String,
+    rateLimiter: RateLimiter
 ): void {
     for (const { key, callback } of events) {
-        client.on(key, (...args) => {
+        client.on(key, async (...args) => {
             // Create a new log method for this event
-            const log = console.log.bind(console, `[Event: ${key}]`)
+            const log = console.log.bind(console, `[Event: ${key}]`);
 
             // Handle Errors, call callback, log errors as needed
             try {
-                callback({ client, log, msgHist, channelHistory, ollama, defaultModel }, ...args)
+                await callback({ client, log, msgHist, channelHistory, ollama, defaultModel, rateLimiter }, ...args);
             } catch (error) {
-                log('[Uncaught Error]', error)
+                log('[Uncaught Error]', error);
             }
-        })
+        });
     }
 }

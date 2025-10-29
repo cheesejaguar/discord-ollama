@@ -18,16 +18,16 @@ export const PrivateThreadCreate: SlashCommand = {
         })
 
         // Send a message in the thread
-        thread.send(`Hello ${interaction.user}! \n\nIt's nice to meet you. Please talk to me by typing @${client.user?.username} with your prompt.`)
+        await thread.send(`Hello ${interaction.user}! \n\nIt's nice to meet you. Please talk to me by typing @${client.user?.username} with your prompt.`);
 
         // handle storing this chat channel
         // store: thread.id, thread.name
-        openChannelInfo(thread.id, thread as ThreadChannel, interaction.user.tag)
+        await openChannelInfo(thread.id, thread as ThreadChannel, interaction.user.tag);
 
         // user only reply
-        return interaction.reply({
+        await interaction.reply({
             content: `I can help you in <#${thread.id}>.`,
             flags: MessageFlags.Ephemeral
-        })
+        });
     }
 }

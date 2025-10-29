@@ -8,7 +8,7 @@ export interface SlashCommand extends ChatInputApplicationCommandData {
         client: Client,
         interaction: ChatInputCommandInteraction,
         options?: ApplicationCommandOption[]
-    ) => void
+    ) => Promise<void>
 }
 
 /**
@@ -24,24 +24,32 @@ export function registerCommands(client: Client, commands: SlashCommand[]): void
     const commandsToRegister: string[] = commands.map(command => command.name)
 
     // fetch all the commands and delete them
-    client.application.commands.fetch().then((fetchedCommands) => {
-        for (const command of fetchedCommands.values()) {
-            if (!commandsToRegister.includes(command.name)) {
-                command.delete().catch(console.error)
-                console.log(`[Command: ${command.name}] Removed from Discord`)
+    client.application.commands.fetch()
+        .then((fetchedCommands) => {
+            for (const command of fetchedCommands.values()) {
+                if (!commandsToRegister.includes(command.name)) {
+                    command.delete().catch(console.error);
+                    console.log(`[Command: ${command.name}] Removed from Discord`);
+                }
             }
-        }
-    })
+        })
+        .catch(error => {
+            console.error('[Commands] Failed to fetch commands:', error);
+        });
 
     // clear the cache of the commands
     client.application.commands.cache.clear()
 
     // iterate through all commands and register them with the bot
-    for (const command of commands)
+    for (const command of commands) {
         client.application.commands
             .create(command)
             .then((c) => {
-                console.log(`[Command: ${c.name}] Registered on Discord`)
-                c.options?.forEach((o) => console.log(`  - ${o.name}`))
+                console.log(`[Command: ${c.name}] Registered on Discord`);
+                c.options?.forEach((o) => console.log(`  - ${o.name}`));
             })
+            .catch(error => {
+                console.error(`[Commands] Failed to create ${command.name}:`, error);
+            });
+    }
 }

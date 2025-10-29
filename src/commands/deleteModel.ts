@@ -1,7 +1,11 @@
-import { ApplicationCommandOptionType, ChatInputCommandInteraction, Client, CommandInteraction, MessageFlags } from 'discord.js'
-import { UserCommand, SlashCommand } from '../utils/index.js'
-import { ollama } from '../client.js'
-import { ModelResponse } from 'ollama'
+import { ApplicationCommandOptionType, ChatInputCommandInteraction, Client, CommandInteraction, MessageFlags } from 'discord.js';
+import { UserCommand, SlashCommand } from '../utils/index.js';
+import { ollama } from '../client.js';
+import { ModelResponse } from 'ollama';
+import { validateModelName, ValidationError } from '../utils/validation.js';
+import { requireAdmin, validateChannel, checkOllamaConnection, modelExists, safeReply } from '../utils/commandHelpers.js';
+import { logger } from '../utils/logger.js';
+import { ErrorCode, getUserFriendlyError } from '../utils/errorMessages.js';
 
 export const DeleteModel: SlashCommand = {
     name: 'delete-model',
@@ -19,56 +23,92 @@ export const DeleteModel: SlashCommand = {
 
     // Delete Model locally stored
     run: async (client: Client, interaction: ChatInputCommandInteraction) => {
-        // defer reply to avoid timeout
-        await interaction.deferReply()
-        const modelInput: string = interaction.options.getString('model-name') as string
-        let ollamaOffline: boolean = false
-
-        // fetch channel and message
-        const channel = await client.channels.fetch(interaction.channelId)
-        if (!channel || !UserCommand.includes(channel.type)) return
-
-        // Admin Command
-        if (!interaction.memberPermissions?.has('Administrator')) {
-            interaction.reply({
-                content: `${interaction.commandName} is an admin command.\n\nPlease contact a server admin to pull the model you want.`,
-                flags: MessageFlags.Ephemeral
-            })
-            return
-        }
-
-        // check if model exists
-        const modelExists = await ollama.list()
-            .then(response => response.models.some((model: ModelResponse) => model.name.startsWith(modelInput)))
-            .catch(error => {
-                ollamaOffline = true
-                console.error(`[Command: delete-model] Failed to connect with Ollama service. Error: ${error.message}`)
-            })
-
-        // Validate for any issue or if service is running
-        if (ollamaOffline) {
-            interaction.editReply({
-                content: `The Ollama service is not running. Please turn on/download the [service](https://ollama.com/).`
-            })
-            return
-        }
-
-            
         try {
-            // call ollama to delete model
-            if (modelExists) {
-                await ollama.delete({ model: modelInput })
-                interaction.editReply({
-                    content: `**${modelInput}** was removed from the the library.`
-                })
-            } else
-                throw new Error()
-        } catch (error) {
-            // could not delete the model
-            interaction.reply({
-                content: `Could not delete the **${modelInput}** model. It probably doesn't exist or you spelled it incorrectly.\n\nPlease try again if this is a mistake.`,
-                flags: MessageFlags.Ephemeral
-            })
+            // CRITICAL FIX: Admin check FIRST
+            if (!await requireAdmin(interaction)) return;
+
+            // Validate channel type with proper error reply
+            const channel = await validateChannel(client, interaction.channelId, UserCommand);
+            if (!channel) {
+                await interaction.reply({
+                    content: 'This command cannot be used in this type of channel.',
+                    flags: MessageFlags.Ephemeral
+                });
+                return;
+            }
+
+            // CRITICAL FIX: Validate inputs BEFORE defer (in try-catch)
+            let modelInput: string;
+            try {
+                modelInput = validateModelName(
+                    interaction.options.getString('model-name')
+                );
+            } catch (error) {
+                if (error instanceof ValidationError) {
+                    await interaction.reply({
+                        content: `**Validation Error:** ${error.message}`,
+                        flags: MessageFlags.Ephemeral
+                    });
+                }
+                return;
+            }
+
+            // NOW defer after validation passes
+            await interaction.deferReply();
+
+            // Check Ollama connection
+            const connectionStatus = await checkOllamaConnection(ollama);
+            if (!connectionStatus.connected) {
+                await interaction.editReply({
+                    content: getUserFriendlyError(connectionStatus.errorCode!)
+                });
+                return;
+            }
+
+            // Check if model exists
+            const exists = await modelExists(ollama, modelInput);
+
+            // Call ollama to delete model
+            if (exists) {
+                await ollama.delete({ model: modelInput });
+                logger.info('Command:DeleteModel', `Model deleted successfully`, {
+                    userId: interaction.user.id,
+                    modelName: modelInput
+                });
+                await interaction.editReply({
+                    content: `✅ **${modelInput}** was removed from the local library.`
+                });
+            } else {
+                await interaction.editReply({
+                    content: `❌ Could not delete **${modelInput}**.\n\nThe model doesn't exist in the local library or may be spelled incorrectly.\n\nPlease check the model name and try again.`
+                });
+            }
+
+        } catch (error: unknown) {
+            logger.error('Command:DeleteModel', 'Error deleting model', {
+                error: error instanceof Error ? error.message : 'Unknown',
+                userId: interaction.user.id
+            });
+
+            let errorMessage: string;
+            if (error instanceof ValidationError) {
+                errorMessage = `**Validation Error:** ${error.message}`;
+            } else if (error instanceof Error) {
+                if (error.message.includes('fetch failed') || error.message.includes('ECONNREFUSED')) {
+                    errorMessage = getUserFriendlyError(ErrorCode.OLLAMA_OFFLINE);
+                } else {
+                    errorMessage = `**Error:** ${error.message}`;
+                }
+            } else {
+                errorMessage = 'An unknown error occurred while deleting the model.';
+            }
+
+            // Use safeReply to handle deferred/non-deferred states
+            await safeReply(
+                interaction,
+                `Unable to delete model.\n\n${errorMessage}`,
+                true
+            );
         }
     }
-}
+};
