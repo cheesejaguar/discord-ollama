@@ -127,26 +127,59 @@ export async function checkOllamaConnection(ollama: Ollama): Promise<OllamaConne
         await ollama.list();
         return { connected: true };
     } catch (error: unknown) {
+        // Extract detailed error information
         const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+        const errorCode = (error as any)?.code || 'N/A';
+        const errorCause = (error as any)?.cause?.message || 'N/A';
+        const errorType = error?.constructor?.name || 'Unknown';
 
-        logger.warn('CommandHelpers', 'Ollama connection check failed', {
-            error: errorMsg
-        });
+        // Get Ollama host from environment for logging
+        const ollamaHost = process.env.OLLAMA_IP || '127.0.0.1';
+        const ollamaPort = process.env.OLLAMA_PORT || '11434';
+        const ollamaUrl = `http://${ollamaHost}:${ollamaPort}`;
 
-        // Determine error type
-        let errorCode: ErrorCode;
-        if (errorMsg.includes('ECONNREFUSED') || errorMsg.includes('fetch failed')) {
-            errorCode = ErrorCode.OLLAMA_OFFLINE;
-        } else if (errorMsg.includes('timeout')) {
-            errorCode = ErrorCode.TIMEOUT;
+        // Determine error type and provide helpful context
+        let errorCodeEnum: ErrorCode;
+        let suggestion = '';
+
+        if (errorMsg.includes('ECONNREFUSED') || errorCode === 'ECONNREFUSED') {
+            errorCodeEnum = ErrorCode.OLLAMA_OFFLINE;
+            suggestion = `Ensure Ollama is running and accessible at ${ollamaUrl}. ` +
+                        `Check: 1) Ollama service is started, 2) Port ${ollamaPort} is not blocked, ` +
+                        `3) For Docker: verify network_mode or OLLAMA_IP setting`;
+        } else if (errorMsg.includes('ENOTFOUND') || errorCode === 'ENOTFOUND') {
+            errorCodeEnum = ErrorCode.NETWORK_ERROR;
+            suggestion = `DNS resolution failed for host '${ollamaHost}'. ` +
+                        `Check: 1) OLLAMA_IP is correct, 2) For Docker Desktop use 'host.docker.internal', ` +
+                        `3) For host network mode use '127.0.0.1'`;
+        } else if (errorMsg.includes('ETIMEDOUT') || errorCode === 'ETIMEDOUT') {
+            errorCodeEnum = ErrorCode.TIMEOUT;
+            suggestion = `Connection timed out trying to reach ${ollamaUrl}. ` +
+                        `Check: 1) Network connectivity, 2) Firewall settings, 3) Ollama is responsive`;
+        } else if (errorMsg.includes('fetch failed')) {
+            errorCodeEnum = ErrorCode.OLLAMA_OFFLINE;
+            suggestion = `Network fetch failed to ${ollamaUrl}. ` +
+                        `Underlying cause: ${errorCause}. ` +
+                        `Check: 1) Ollama is running, 2) URL is correct, 3) No proxy issues`;
         } else {
-            errorCode = ErrorCode.NETWORK_ERROR;
+            errorCodeEnum = ErrorCode.NETWORK_ERROR;
+            suggestion = `Unexpected error connecting to ${ollamaUrl}`;
         }
+
+        // Log comprehensive error information
+        logger.warn('CommandHelpers', 'Ollama connection check failed', {
+            error: errorMsg,
+            errorType,
+            errorCode,
+            errorCause,
+            attemptedUrl: ollamaUrl,
+            suggestion
+        });
 
         return {
             connected: false,
             error: errorMsg,
-            errorCode
+            errorCode: errorCodeEnum
         };
     }
 }
