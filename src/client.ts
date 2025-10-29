@@ -30,6 +30,11 @@ const client = new Client({
 // initialize connection to ollama container
 export const ollama = new Ollama({
     host: `http://${Keys.ipAddress}:${Keys.portAddress}`,
+    ...(Keys.ollamaApiKey && {
+        headers: {
+            'Authorization': `Bearer ${Keys.ollamaApiKey}`
+        }
+    })
 });
 
 // Create Queue managed by Events

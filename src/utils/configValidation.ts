@@ -15,6 +15,7 @@ export interface BotConfig {
     ollamaUrl: string;
     ollamaHost: string;
     ollamaPort: string;
+    ollamaApiKey?: string;
     defaultModel: string;
     dataDirectory: string;
     logLevel: string;
@@ -118,6 +119,7 @@ export function validateConfig(): BotConfig {
         // Ollama configuration
         const ollamaHost = getEnvVar('IP_ADDRESS', '127.0.0.1');
         const ollamaPort = getEnvVar('OLLAMA_PORT', '11434');
+        const ollamaApiKey = process.env.OLLAMA_API_KEY || ''; // Optional, read directly
         let ollamaUrl: string;
 
         try {
@@ -184,6 +186,7 @@ export function validateConfig(): BotConfig {
             ollamaUrl,
             ollamaHost,
             ollamaPort,
+            ...(ollamaApiKey && { ollamaApiKey }),
             defaultModel,
             dataDirectory,
             logLevel,
