@@ -36,6 +36,30 @@ function isValidIPv4(ip: string): boolean {
 }
 
 /**
+ * Validates hostname format (for Docker container names, DNS names, etc.)
+ * Allows alphanumeric characters, hyphens, underscores, and dots
+ *
+ * @param hostname - Hostname string to validate
+ * @returns true if valid hostname, false otherwise
+ */
+function isValidHostname(hostname: string): boolean {
+    // Allow localhost as special case
+    if (hostname === 'localhost') {
+        return true;
+    }
+
+    // Hostname must be 1-253 characters
+    if (hostname.length < 1 || hostname.length > 253) {
+        return false;
+    }
+
+    // Allow alphanumeric, hyphens, underscores, and dots
+    // Cannot start or end with hyphen or dot
+    const hostnameRegex = /^[a-zA-Z0-9]([a-zA-Z0-9\-_]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-_]*[a-zA-Z0-9])?)*$/;
+    return hostnameRegex.test(hostname);
+}
+
+/**
  * Validates Discord bot token format
  * Discord bot tokens are 70-72 characters with 3 base64 segments separated by dots
  *
@@ -117,13 +141,14 @@ export function getEnvVar(name: string, fallback?: string): string {
         }
     }
 
-    // Validate IPv4 addresses
+    // Validate IPv4 addresses or hostnames (for Docker container names, etc.)
     if (name.endsWith('_IP') || name.endsWith('_ADDRESS')) {
-        if (!isValidIPv4(value)) {
+        if (!isValidIPv4(value) && !isValidHostname(value)) {
             throw new Error(
-                `Environment variable ${name} is not a valid IPv4 address: "${value}".\n\n` +
-                `Expected format: X.X.X.X where each X is 0-255.\n` +
-                `Examples: 127.0.0.1, 172.18.0.2, 192.168.1.1`
+                `Environment variable ${name} must be either a valid IPv4 address or hostname: "${value}".\n\n` +
+                `IPv4 format: X.X.X.X where each X is 0-255.\n` +
+                `Hostname format: alphanumeric with optional hyphens/underscores/dots\n` +
+                `Examples: 127.0.0.1, open-webui, localhost, my-container.local`
             );
         }
     }
