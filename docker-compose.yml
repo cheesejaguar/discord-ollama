@@ -1,5 +1,5 @@
 # creates the docker compose
-# Modified to connect to existing Ollama instance on host machine
+# Modified to connect to OpenWebUI's Ollama via Docker networking
 
 # build individual services
 services:
@@ -11,22 +11,22 @@ services:
     image: kevinthedang/discord-ollama:0.8.7
     environment:
       CLIENT_TOKEN: ${CLIENT_TOKEN}
-      OLLAMA_IP: ${OLLAMA_IP}     # Use host.docker.internal or host IP
+      OLLAMA_IP: ${OLLAMA_IP}     # Use container name: open-webui
       OLLAMA_PORT: ${OLLAMA_PORT}
       OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}  # Optional API key for Ollama auth
       MODEL: ${MODEL}
-    # Use host networking to access Ollama on localhost
-    # Comment out network_mode and uncomment 'networks' if you prefer bridge networking
-    network_mode: host
-    # networks:
-    #   - discord-net
+    # Connect to OpenWebUI's Docker network
+    networks:
+      - default
     volumes:
       - discord:/src/app          # docker will not make this for you, make it yourself
 
-# Optional: Use bridge network instead of host networking
-# networks:
-#   discord-net:
-#     driver: bridge
+# Use the default bridge network
+# OpenWebUI should be on this network too
+networks:
+  default:
+    name: bridge
+    external: true
 
 volumes:
   discord:
